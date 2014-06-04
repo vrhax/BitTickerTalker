@@ -1,11 +1,10 @@
 # -----------------------------------------------------------------------------
 # This code is written by VRHax.
-#
 # It is in the public domain, so you can do what you like with it
-# but a link to https://github.com/vrhax/BitTickerTalker would be nice.
+# but a link to https://github.com/vrhax/BitTalker would be nice.
 #
-# It works on the Raspberry Pi and supports SainSmart 1.8" TFT.
-# It uses standard Debian Wheezy OS and festival for text to speech
+# It works on the Raspberry Pi computer with the standard Debian Wheezy OS and
+# the festival tts module
 # -----------------------------------------------------------------------------
 #
 # USAGE: python bittalker.py
@@ -14,7 +13,7 @@
 # import system libraries
 # -----------------------------------------------------------------------------
 
-import ConfigParser, pygame, os, sys, time
+import ConfigParser, pygame, os, sys, traceback, time
 from pygame.locals import *
 
 os.environ["SDL_FBDEV"] = "/dev/fb1"
@@ -61,6 +60,15 @@ import bitcoinrpc
 import subprocess
 
 # -----------------------------------------------------------------------------
+# constants and static
+# -----------------------------------------------------------------------------
+
+lastex  = "000.00";
+lastdex = "000.00";
+lastbal = "000.00";
+started = False;
+
+# -----------------------------------------------------------------------------
 # configuration initialization
 # -----------------------------------------------------------------------------
 
@@ -75,12 +83,6 @@ watch   = config.getboolean('Default','watch');
 showit  = config.getboolean('Default','display');
 chatter = config.getboolean('Default','sound');
 debug   = config.getboolean('Default','debug');
-
-btcuser = config.get('Client','btcuser');
-btcpass = config.get('Client','btcpass');
-btchost = config.get('Client','btchost');
-btcport = config.getint('Client','btcport');
-btcshow = config.getboolean('Client','btcshow');
 
 if config.has_option('ColdStorage', 'btc'):
     btccold = config.getfloat('ColdStorage', 'btc');
@@ -99,12 +101,11 @@ exhi    = config.get(exname,'high');
 exlo    = config.get(exname,'low');
 exvol   = config.get(exname,'vol');
 
-btcbalance = '0.0';
-lastex  = "000.00";
-lastdex = "000.00";
-lastbal = "000.00";
-started = False;
-client  = True;
+# -----------------------------------------------------------------------------
+# fetch BTC addresses
+# -----------------------------------------------------------------------------
+with open('addresses.cfg') as f:
+    addresses = f.read().splitlines();
 
 # -----------------------------------------------------------------------------
 # templates
@@ -143,24 +144,16 @@ pygame.display.set_caption('Drawing')
 
 # -----------------------------------------------------------------------------
 # Fill background
+#    stamp       = pygame.transform.rotate(stamp,270);
 # -----------------------------------------------------------------------------
 if(showit):
     background  = pygame.Surface(screen.get_size())
     background  = background.convert()
     background.fill(BLACK)
 
-# -----------------------------------------------------------------------------
-#  display a background image (must be in same dirctory as script)
-# -----------------------------------------------------------------------------
-#    bgimg      = pygame.image.load("background.jpg");
-#    bgpos      = bgimg.get_rect(centerx=background.get_width()/1.75,centery=background.get_height()/2);
-#    background.blit(bgimg,bgpos);
-# -----------------------------------------------------------------------------
-
-# -----------------------------------------------------------------------------
-# hide the mouse cursor
-# -----------------------------------------------------------------------------
-
+    stamp       = pygame.image.load("bitstamp.jpg");
+    stampos     = stamp.get_rect(centerx=background.get_width()/1.75,centery=background.get_height()/2);
+    background.blit(stamp,stampos);
     pygame.mouse.set_visible(0);
 
 # -----------------------------------------------------------------------------
@@ -194,7 +187,6 @@ def log(phrase):
     print phrase;
     sys.stdout = old_stdout;
     log_file.close();
-
 # -----------------------------------------------------------------------------
 # speech macros
 # -----------------------------------------------------------------------------
@@ -207,8 +199,6 @@ def say(phrase):
 
 def talk(delta,price,btcbal):
 
-    global client;
-
     now = strftime("%Y-%m-%d %H:%M:%S", time.localtime());
 
     if(delta != ''):
@@ -216,13 +206,10 @@ def talk(delta,price,btcbal):
     else :
         say(smktmsg.substitute(nprice='\$'+price));
 
-    if(client):
-        btcttl  = str(float(btcbal)+float(btccold));
-        btcval  = str("%.2f" % round((float(price) * float(btcttl)),2));
-        say(sbitmsg.substitute(ttl=btcttl,bval='\$'+btcval));
-        if(debug):log(plog1.substitute(pnow=now,oprice='$'+lastex,nprice='$'+price,btc=btcbal,btcc=btccold,ttl=btcttl,bval='$'+btcval));
-    else:
-        if(debug):log(plog2.substitute(pnow=now,oprice='$'+lastex,nprice='$'+price));
+    btcttl  = str(float(btcbal)+float(btccold));
+    btcval  = str("%.2f" % round((float(price) * float(btcttl)),2));
+    say(sbitmsg.substitute(ttl=btcttl,bval='\$'+btcval));
+    if(debug):log(plog1.substitute(pnow=now,oprice='$'+lastex,nprice='$'+price,btc=btcbal,btcc=btccold,ttl=btcttl,bval='$'+btcval));
 
 # -----------------------------------------------------------------------------
 # Display some text
@@ -282,11 +269,35 @@ def ticker(bval, val, hi, lo, tvol, ttl, tcolor):
     refresh();
 
 # -----------------------------------------------------------------------------
+# fetch balance for each address in address section
+# -----------------------------------------------------------------------------
+# http://blockchain.info/address/$bitcoin_address?format=json
+
+btcdivider = '100000000';
+bcpre = 'https://blockchain.info/address/';
+bcap  = '?format=json';
+
+def getBalance():
+    balance = 0;
+    for i in range(len(addresses)):
+        bcurl    = bcpre+addresses[i]+bcap;
+        try:
+            jsonurl = urllib2.urlopen(bcurl);
+            data = json.loads(jsonurl.read());
+        except (urllib2.HTTPError):
+            say('Blockchain info unaccessible. Continuing.');
+            continue;
+        balance += data["final_balance"];
+    return float(balance)/int(btcdivider);
+
+# -----------------------------------------------------------------------------
 # main
 # -----------------------------------------------------------------------------
 
 refresh();
 
+# say('Hello!');
+# say(sname+' started.');
 say(exname+' polling set to '+str(poll)+' seconds.');
 
 # -----------------------------------------------------------------------------
@@ -298,25 +309,10 @@ while True:
     try:
 
 # -----------------------------------------------------------------------------
-# get bitcoin client data
+# get bitcoin balance
 # -----------------------------------------------------------------------------
-        if(btcshow):
-            try:
-                conn = bitcoinrpc.connect_to_remote(btcuser, btcpass, host=btchost, port=btcport)
-                btcbalance = str(conn.getbalance());
-                client = True;
+        btcbalance = getBalance();
 
-# -----------------------------------------------------------------------------
-# no client running
-# -----------------------------------------------------------------------------
-
-            except:
-                if (client):
-                    print "Cannot connecct to bitcoin client:", sys.exc_info()[0]
-                    btcbalance = '0.0';
-                    say('No bitcoin client found.');
-                    say('Continuing.');
-                client = False;
 # -----------------------------------------------------------------------------
 # get market data
 # -----------------------------------------------------------------------------
@@ -342,7 +338,6 @@ while True:
 # -----------------------------------------------------------------------------
 # display ${:,.2f}
 # -----------------------------------------------------------------------------
-
         if(showit):
             btcttl  = (float(btcbalance) + float(btccold));
             btcval  = (float(btcprice) * float(btcttl));
@@ -371,7 +366,7 @@ while True:
 #            lastbal = btcbalance;
 # -----------------------------------------------------------------------------
 
-        if (client and (btcbalance != lastbal)) :
+        if (btcbalance != lastbal) :
             talk('',btcprice,btcbalance);
             lastbal = btcbalance;
         elif (float(btcprice) >= float(lastex) + float(pvar)) :
